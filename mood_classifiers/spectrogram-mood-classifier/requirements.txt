@@ -1,0 +1,6 @@
+librosa==0.6.1
+h5py==2.9.0
+tensorflow==1.9.0
+numpy==1.14.3
+scikit-learn==0.20.2
+google-cloud==0.33.1
