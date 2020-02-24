@@ -5,7 +5,8 @@ from tensorflow.keras.utils import to_categorical
 import tensorflow
 import os
 
-PATH_TO_GOOGLE_CREDENTIALS = r'C:\Users\lewys\PycharmProjects\mood_algorithm\local_data\moodmvp-15705c9d403a.json'
+# PATH_TO_GOOGLE_CREDENTIALS = r'C:\Users\lewys\PycharmProjects\mood_algorithm\local_data\moodmvp-15705c9d403a.json'
+PATH_TO_GOOGLE_CREDENTIALS = '/home/lewys/secrets/mood-creds.json'
 SAMPLE_RATE = 22050
 OFFSET = 47
 DURATION = 30

@@ -4,3 +4,4 @@ tensorflow==1.9.0
 numpy==1.14.3
 scikit-learn==0.20.2
 google-cloud==0.33.1
+google-api-python-client
