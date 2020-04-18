@@ -1,233 +1,190 @@
-"""
-Best performers so far: SampleCNN_KAIST_31104_12khz_off57-NORM-trainwsubmissions-testdata-binary-sigmoid-checkpoint.h5
-    80% acc on test data (never seen before)
-
-"""
-import os
-import glob
 import numpy as np
-import pandas as pd
 import librosa
-import json
-from extract_samples import normalize
-import keras
-from keras import backend as K
-from tensorflow.python.saved_model import builder as saved_model_builder
-from tensorflow.python.saved_model import tag_constants, signature_constants
-from tensorflow.python.saved_model.signature_def_utils_impl import predict_signature_def
-OFFSET = 57.0
+import tensorflow
+from tensorflow.keras.utils import to_categorical
+# import keras
+# from keras.utils import to_categorical
+import tensorflow
+import os
+
+PATH_TO_GOOGLE_CREDENTIALS = r'C:\Users\lewys\PycharmProjects\mood_algorithm\local_data\google_ml_credentials.json'
 
 
-def extract_samples(file_name, offset):
-    sr = 12000
-    segment_length = 31104
-    duration = 2.592 # 31104 samples @ 12000 khz
-    X, sr = librosa.load(file_name, sr=sr, mono=True, offset=offset, duration=duration)
-    if X.shape[0] > segment_length:
-        X = X[:segment_length]
-    return X
+def splitsong(X, sr, label, chunk_size_samples, overlap_amt=0.5):
+    '''
+    split (30sec) audio into 50% overlapping (3sec) windows
+    '''
+    # turn the chunk size in secs to the portion of the total song you want your chunks to be
+    # should be 0.1 if incoming X is 30 secs of audio
+    song_windows = []
+    song_labels = []
 
-
-def get_song_batch(songs_dir, batch_size):
-    batch = None
-    for counter, song in enumerate(songs_dir):
-        if counter < batch_size:
-            song_samples = extract_samples(song, 57.0)
-            print('Current song: ', song)
-            if batch is None:
-                batch = song_samples
-            else:
-                batch = np.vstack([batch, song_samples])
+    chunk_ratio = chunk_size_samples / X.shape[0]
+    forward_hop = int(X.shape[0] * chunk_ratio * overlap_amt)
+    for i in range(0, X.shape[0] - chunk_size_samples, forward_hop):
+        song_chunk = X[i : i + chunk_size_samples]
+        if len(song_chunk) != chunk_size_samples:
+            print('error! song chunk is not {} samples'.format(chunk_size_samples))
+            exit()
         else:
-            break
-    batch.shape = (batch.shape[0], batch.shape[1], 1)
-    print('batch shape: ', batch.shape)
-    return batch
+            # if length of chunk is good reshape it to fit into Conv1D layer
+            song_chunk = np.reshape(song_chunk, (song_chunk.shape[0], 1))
+            song_windows.append(song_chunk)
+            song_labels.append(label)
+            # print('song chunk shape: ', song_chunk.shape)
+
+    return np.asarray(song_windows), np.asarray(song_labels)
 
 
-def single_prediction_mood_vals(song_path, model):
-    # TODO: Try to get more accurate prediction try slide extract samples offset around to get a few diff portions of the song and average all predictions
-    X = extract_samples(song_path, offset=57.0)
-    X.shape = (1, len(X), 1)
-    prediction = model.predict(X)
-    return prediction
+def preprocess(file_name):
+    # takes in song, returns windowed mel spectrograms
+    # print('loading file {} with offset {}'.format(file_name, OFFSET))
+    # samples, sr = librosa.load(file_name, sr=22050) # OG
+    samples, sr = librosa.load(file_name, sr=22050, offset=43, duration=27)
+    samples = samples[:590490] # make sampled song evenly divisble by 59049
+    # print(samples.shape)
+
+    print('windowing file...')
+    X, y = splitsong(samples, sr, label=0, chunk_size_samples=59049)
+    y = to_categorical(y)
+    return X, y
 
 
-def get_label_from_mood_values(song_path, mood_values):
-    song_name = ''.join(song_path.split('\\')[-1:])
-    prediction_string = 'Mood values: {}\n'.format(mood_values)
-    mood_prediction = np.argmax(mood_values)
-    if mood_prediction == 0:
-        prediction_string += '{} is predicted to be: {}'.format(song_name, 'angry-0 >:(')
-    elif mood_prediction == 1:
-        prediction_string += '{} is predicted to be: {}'.format(song_name, 'happy-1 :)')
-    elif mood_prediction == 2:
-        prediction_string += '{} is predicted to be: {}'.format(song_name, 'sad-2 :(')
-    elif mood_prediction == 3:
-        prediction_string += '{} is predicted to be: {}'.format(song_name, 'romantic-3 <3')
-    return prediction_string
+def calculate_average_mood(mood_vals):
+    avg_mood = np.mean(list(map(np.argmax, mood_vals)))
+    print('average mood: ', avg_mood)
+    pred_mood = np.round(avg_mood)
+    return pred_mood
 
 
-def to_savedmodel(model, export_path):
-    """Convert the Keras HDF5 model into TensorFlow SavedModel."""
+def calculate_mode_mood(mood_vals):
+    # angry happy sad sexy
+    mood_counts = [0, 0, 0, 0]
+    # get the max index for each prediction window, use it to update the mood_counts array
+    for window_vals in mood_vals:
+        pred_for_window = np.argmax(window_vals)
+        if(pred_for_window == 0):
+            mood_counts[0] += 1
+        elif(pred_for_window == 1):
+            mood_counts[1] += 1
+        elif(pred_for_window == 2):
+            mood_counts[2] += 1
+        elif(pred_for_window == 3):
+            mood_counts[3] += 1
+        else: # just in case
+            print('ERROR. Got a max that is not between 0-3: ', pred_for_window)
+            exit()
 
-    print('export_path: ', export_path)
-    builder = saved_model_builder.SavedModelBuilder(export_path)
-	# model went into production with this signature:
-    # signature = predict_signature_def(inputs={'input': model.inputs[0]}, outputs={'income': model.outputs[0]})
-	# i think it should've been this signature (look at inputs): 
-	signature = predict_signature_def(inputs={'input': model.input}, outputs={'income': model.outputs[0]})
-
-    with K.get_session() as sess:
-        builder.add_meta_graph_and_variables(
-            sess=sess,
-            tags=[tag_constants.SERVING],
-            signature_def_map={
-                # may need to add another signature for prediction
-                signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY:
-                    signature}
-        )
-        builder.save()
-
-
-def batch_prediction_from_directory(dir, model, do_normalization, savelog=True):
-    logfile = os.path.join(dir, 'predictions.json')
-    if savelog == True:
-        if os.path.exists(logfile):
-            os.remove(logfile)
-
-    for song in glob.glob(os.path.join(dir, '*.mp3')):
-        song_name = ''.join(song.split('\\')[-1:])
-        if do_normalization == True:
-            norm_song = normalize(song)
-        else:
-            norm_song = song
-        samples = extract_samples(norm_song, OFFSET)
-        samples = np.reshape(samples, (1, len(samples), 1))
-        mood_values = model.predict(samples)
-        mood_prediction = np.argmax(mood_values)
-
-        if savelog == True:
-            # logging
-            with open(logfile, 'a') as fp:
-                data = {'song_name': song_name,
-                        #'samples': samples.tolist(),
-                        'mood_values': mood_values.tolist(),
-                        'mood_prediction': int(mood_prediction)
-                        }
-                json_data = json.dumps(data)
-                fp.write(json_data)
-        get_label_from_mood_values(song, mood_values)
-
-    return print('Your log is at {}'.format(logfile))
+    max_mood_count = max(mood_counts)
+    max_indices = [i for i, mood_count in enumerate(mood_counts) if mood_count == max_mood_count]
+    if len(max_indices) > 1:
+        # there is a tie for max values. return -1 to indicate that
+        # mean mood should be used for overall prediction instead
+        return -1
+    else:
+        # if there is no tie for most frequent max, simply return the index
+        return max_indices[0]
 
 
-def multi_song_prediction_from_file(file_path, model):
-    # TODO: add in save_log version?
-    # if (save_log == True):
-    #     with open('multi_song_prediction_{}_model_{}_file'.format(model_name, file_path)):
-    total_songs = 0
-    correctly_classified_songs = 0
-    msgpack_data = pd.read_msgpack(file_path)
-    for counter, song in enumerate(msgpack_data):
-        song_name = ''.join(song['song'].split('\\')[-1:])
-        samples = song['samples']
-        samples = np.reshape(samples,(1,len(samples),1))
-        mood_values = model.predict(samples)
-        real_label = int(song['mood'].split('-')[1])
-        prediction_label = get_label_from_mood_values(song_name, mood_values)
-        print(prediction_label)
-        print('Real label: {}\n'.format(song['mood']))
-        # gather counts for accuracy calculation
-        prediction = np.argmax(mood_values)
-        if prediction == real_label:
-            correctly_classified_songs += 1
-        total_songs += 1
+def local_predict(file_name, model_name):
+    X, y = preprocess(file_name)
+    X = X[0]
+    X = np.reshape(X, (1, X.shape[0], X.shape[1], X.shape[2]))
 
-    # calculate accuracy
-    print('Total songs ', total_songs)
-    print('Correctly classified songs ', correctly_classified_songs)
-    acc = correctly_classified_songs/total_songs
-    print('Accuracy: {}%'.format(acc))
-    return acc
+    print('loading model: ', model_name)
+    model = tensorflow.keras.models.load_model(model_name)
+    mood_vals = model.predict(X)
+
+    print('mood vals for each song window:\n', mood_vals)
+    return mood_vals
 
 
-def cloudML_predict(song_path):
-    # POST https://ml.googleapis.com/v1/projects/my-project/models/my-model:predict
-    # r = requests.post('https://ml.googleapis.com/v1/projects/mood-algorithm/models/Mood_SampleCNN:predict', json=predict_json)
-
+def cloud_predict(song_path):
     from oauth2client.client import GoogleCredentials
     from googleapiclient import discovery
     from googleapiclient import errors
-    # pip install google-cloud 0.33.1
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r'C:\Users\lewys\PycharmProjects\mood_algorithm\local_data\google_ml_credentials.json'
+    import json
+
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = PATH_TO_GOOGLE_CREDENTIALS
     credentials = GoogleCredentials.get_application_default()
-    print(credentials)
+    # print(credentials)
+    responses = []
+    windowed_X, y = preprocess(song_path)
 
-    samples = extract_samples(song_path, 57)
-    samples.shape = (1, len(samples), 1)
-    json_compatible_samples = samples.tolist()
-    predict_dict = json.dumps({'instances': json_compatible_samples})
-    print('Submission to CloudML: ', predict_dict)
+    for index, window in enumerate(windowed_X[-5:]):
+        print('submitting window #{}'.format(index))
+        reshaped_window = np.reshape(window, (1, window.shape[0], 1))
+        print('shape of reshaped window: ', reshaped_window.shape)
 
-    ml = discovery.build('ml', 'v1')
-    name = 'projects/{}/models/{}'.format('mood-algorithm', 'Mood_SampleCNN')
+        json_compatible_samples = reshaped_window.tolist()
+        predict_object = json.dumps({'instances': json_compatible_samples})
+        # write json to local storage before sending to cloudML to check size and stuff
+        # with open('./instances.json', 'w+') as infile:
+        #     infile.write(predict_dict)
+        #print('Submission to CloudML shape: ', reshaped_window.shape)
 
-    response = ml.projects().predict(
-        name=name,
-        body={'instances': json_compatible_samples}
-    ).execute()
+        ml = discovery.build('ml', 'v1')
+        name = 'projects/{}/models/{}'.format('mood-algorithm', 'Mood_SampleCNN_big')
 
-    if 'error' in response:
-        raise RuntimeError(response['error'])
-    return response['predictions']
+        response = ml.projects().predict(
+            name=name,
+            body={'instances': json_compatible_samples}
+        ).execute(num_retries=2)
+        if 'error' in response:
+            raise RuntimeError(response['error'])
+        else:
+            responses.extend(response['predictions'])
+    return responses
+
+
+def get_overall_prediction(predictions_list):
+    most_frequent_max_mood = calculate_mode_mood(predictions_list)
+    # print('most frequent max mood: ', most_frequent_max_mood)
+
+    if most_frequent_max_mood == -1:
+        print('Tie for most frequent max. Calculating average...')
+        avg_mood = calculate_average_mood(predictions_list)
+        # print('avg mood: ', avg_mood)
+        return avg_mood
+    else:
+        return most_frequent_max_mood
+
+
+def main():
+    file_name = r'C:\Users\lewys\Downloads\songs\awol.mp3'
+    # local predict
+    # model_name = os.path.join(os.getcwd(), '2D_mood_cnn.h5')
+    # local_predict(file_name, model_name)
+
+    # multi cloud predict
+    files = [
+      r'C:\Users\lewys\PycharmProjects\mood_algorithm\songs\submission_songs\happy-1\Warm Knightz  Ft. SoFlo Reserved, Codeine Kobe (Prod. B.Young)-331026203-13LUFSnorm.mp3',
+      r'C:\Users\lewys\PycharmProjects\mood_algorithm\songs\submission_songs\happy-1\TOKYODREAM-390697497-13LUFSnorm.mp3',
+      r'C:\Users\lewys\PycharmProjects\mood_algorithm\songs\submission_songs\happy-1\Mingled Radical Thoughts-297332371-13LUFSnorm.mp3',
+      r'C:\Users\lewys\PycharmProjects\mood_algorithm\songs\submission_songs\happy-1\Here I Am (Prod. RJ)-330941711-13LUFSnorm.mp3',
+      r'C:\Users\lewys\PycharmProjects\mood_algorithm\songs\submission_songs\happy-1\Hits-396735915-13LUFSnorm.mp3'
+    ]
+    for fn in files:
+        print('predicting for song: ', fn)
+        cloudML_response = cloud_predict(fn)
+        predictions_for_each_window = [mood_val['output'] for mood_val in cloudML_response]
+        for i, pred in enumerate(predictions_for_each_window):
+            print('prediction for window #{}: {}'.format(i, pred))
+
+        pred = get_overall_prediction(predictions_for_each_window) # mood predictions for each window
+        print('\nOverall mood prediction: ', pred)
+        print('actual mood: ', fn.split('\\')[7])
+
+    # cloud predict
+    # cloudML_response = cloud_predict(file_name)
+    #
+    # predictions_for_each_window = [mood_val['output'] for mood_val in cloudML_response]
+    # for i, pred in enumerate(predictions_for_each_window):
+    #     print('prediction for window #{}: {}'.format(i, pred))
+    #
+    # pred = get_overall_prediction(predictions_for_each_window) # mood predictions for each window
+    # print('\nOverall mood prediction: ', pred)
 
 
 if __name__ == '__main__':
-    # model_name = 'SampleCNN_KAIST_31104_12khz_off57-NORM-trainwsubmissions-testdata-binary-sigmoid-checkpoint.h5' # current production
-    # model_name = 'SampleCNN_KAIST_31104_12khz_off57-NORM-testdata-binary-sigmoid-AFTER50.h5'
-    model_name = 'SampleCNN_KAIST_31104_12khz_off57-NORM-testdata-binary-sigmoid-checkpoint-data-aug.h5'
-
-    model = keras.models.load_model(os.path.join(os.pardir, 'local_data', model_name))
-    print('Model {} loaded!'.format(model_name))
-
-    ### turn keras model into tf graph and save it to upload to google cloud ML engine ###
-    # to_savedmodel(model, export_path=r'C:\Users\lewys\PycharmProjects\mood_algorithm\gcloud_graphs')
-
-    ### cloudML prediction ###
-    # song_path = os.path.join(os.pardir, 'local_data', 'songs', 'lovesong.mp3')
-    # print('cloud predicting on song path: ', song_path)
-    # cloudML_prediction = cloudML_predict(song_path)
-    # print('CloudML prediction: ', cloudML_prediction)
-
-    ### single prediction and labeling ###
-    # song_path = os.path.join(os.getcwd(), 'data', 'dinner-at-my-place.mp3')
-    # mood_values = single_prediction_mood_vals(song_path, model)
-    # prediction_label = get_label_from_mood_values(song_path, mood_values)
-    # print(prediction_label)
-
-    ### batch prediction from file with ACCURACY calculation###
-    #file_name = 'submissions_samples_31104_12khz_off15-NORM.msg'
-    #file_name = 'submission_samples_jun4_31104_12khz_off57-NORM.msg'
-    #file_name = 'test_samples_jun4_31104_12khz_off57-NORM.msg'
-    #file_path = os.path.join(os.pardir, 'local_data', file_name)
-    #multi_song_prediction_from_file(file_path, model)
-
-    ### comparison of batch prediction to multiple single prediction ###
-    # angry_subs = os.path.join(os.getcwd(), r'songs\submission_songs\angry-0')
-    # angry_subs = glob.glob(os.path.join(angry_subs, '*.mp3'))
-    # print(angry_subs)
-    # song_batch = get_song_batch(angry_subs, 3)
-    # batch_preds = model.predict(song_batch, batch_size=3)
-    # print('Batch predictions: ', batch_preds)
-    # print()
-    #
-    # for counter, song_path in enumerate(angry_subs):
-    #     if counter < 3:
-    #         mood_values = single_prediction_mood_vals(song_path, model)
-    #         print('vals for {}\n{}'.format(song_path, mood_values))
-    #         print()
-
-    ### batch prediction from directory ###
-    predict_path = os.path.join(os.pardir, 'local_data', 'songs')  # a path with mp3s
-    batch_prediction_from_directory(predict_path, model=model, do_normalization=False)
+    main()

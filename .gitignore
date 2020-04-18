@@ -1,0 +1,5 @@
+test_song/
+*.npy
+*.png
+
+test_subset/

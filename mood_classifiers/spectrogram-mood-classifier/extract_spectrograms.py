@@ -51,9 +51,10 @@ def read_data(src_dir, classes_dict, num_samples, debug=True):
                 # Read each audio file in cur folder
                 file_name = os.path.join(mood_folder, file)
                 if debug:
-                    print('Reading file: {}'.format(file_name))
+                    print('Reading {} samples from file: {}'.format(num_samples, file_name))
                 samples, sr = librosa.load(file_name, sr=22050)
                 samples = samples[:num_samples]
+                print('samples shape: ', samples.shape);
                 # Convert to dataset of melspectrograms
                 windowed_samples, y = splitsongs(samples, classes_dict[class_key])
                 # Convert to "spec" representation
@@ -66,9 +67,12 @@ def read_data(src_dir, classes_dict, num_samples, debug=True):
 if __name__ == '__main__':
     print('extracting data')
     # dataset_dir = '../../songs/training_data'
-    dataset_dir = '../../songs/smol_training_data'
+    # dataset_dir = '../../songs/smol_training_data'
+    dataset_dir = '/home/lewys/dev/thesis/mood-music-classification/test_subset'
     song_samples = 660000  # roughly 30 secs at 22050 sr
     moods = {'angry-0': 0, 'happy-1': 1, 'sad-2': 2, 'romantic-3': 3}
     X, y = read_data(dataset_dir, moods, song_samples, debug=True)
-    np.save('x_mood_dataset_smol.npy', X)
-    np.save('y_mood_dataset_smol.npy', y)
+    print('x shape: ', X.shape)
+    print('y shape: ', y.shape)
+    np.save('x_mood_dataset.npy', X)
+    np.save('y_mood_dataset.npy', y)

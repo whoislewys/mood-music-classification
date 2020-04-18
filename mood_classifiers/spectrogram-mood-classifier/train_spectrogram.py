@@ -5,6 +5,7 @@ import sklearn
 from sklearn.model_selection import train_test_split
 # equivalent tf.keras imports
 import tensorflow as tf
+import tensorflow.keras.backend as K
 print('using tensorflow version: ', tf.__version__)
 print('tf.keras version: ', tf.keras.__version__)
 from tensorflow.python.lib.io import file_io
@@ -16,6 +17,11 @@ from tensorflow.keras.layers import Dense, Activation, Conv2D, MaxPooling2D, Dro
 MODEL_NAME = '2D_mood_cnn' # for CloudML
 MODEL_NAME_H5 = MODEL_NAME + '.h5'
 
+
+def auc(Y, y):
+  auc = tf.metrics.auc(Y, y)[1]
+  K.get_session().run(tf.local_variables_initializer())
+  return auc
 
 def build_model(input_shape, using_tfkeras=True):
     # Model Definition
@@ -51,18 +57,23 @@ def build_model(input_shape, using_tfkeras=True):
     # V1
     model.add(Dense(num_genres, activation='softmax'))
 
-    print('input shape: ', input_shape)
+    # Print model metadata
+    print('input shape:', input_shape)
+    for i, layer in enumerate(model.layers):
+      print('layer {} shape: {}'.format(i, layer.get_output_at(0).get_shape().as_list()))
     model.summary()
+
     return model
 
 
 def train(model, job_dir, X_train, y_train, X_test, y_test):
-    model.compile(loss='categorical_crossentropy',
-              optimizer='adam',
-              metrics=['categorical_accuracy'])
+    model.compile(
+        loss='categorical_crossentropy',
+        optimizer='adam',
+        metrics=['categorical_accuracy', auc])
 
-    # checkpointer = ModelCheckpoint(filepath=MODEL_SAVE_PATH, verbose=1, save_best_only=True, save_weights_only=False, mode='auto')
-    # callbacks_list = [checkpointer]
+    checkpointer = ModelCheckpoint(filepath=MODEL_SAVE_PATH, verbose=1, save_best_only=True, save_weights_only=False, mode='auto')
+    callbacks_list = [checkpointer]
 
     hist = model.fit(X_train, y_train,
               batch_size=32,
@@ -71,7 +82,7 @@ def train(model, job_dir, X_train, y_train, X_test, y_test):
               validation_data=(X_test, y_test)
               )
 
-    tf.keras.backend.set_learning_phase(0) # Ignore dropout at inference
+    K.set_learning_phase(0) # Ignore dropout at inference
 
     # cloud save to .h5
     print('saving to .h5 job_dir bucket')
@@ -87,7 +98,7 @@ def train(model, job_dir, X_train, y_train, X_test, y_test):
     # And stored with the default serving key
     print('saving SavedModel to job_dir bucket at:', export_path)
     # tf.contrib.saved_model.save_keras_model(model, export_path) # experimental in tensorflow>1.12
-    with tf.keras.backend.get_session() as sess:
+    with K.get_session() as sess:
         tf.saved_model.simple_save(
             sess,
             export_path,
@@ -99,26 +110,25 @@ def main(job_dir, **args):
     logs_path = job_dir + '/logs/'
 
     # local load
-    # X = np.load('x_mood_dataset.npy')
-    # y = np.load('y_mood_dataset.npy')
+    X = np.load('x_mood_dataset.npy')
+    y = np.load('y_mood_dataset.npy')
 
     # if the above doesn't work for loading, try this:
     # python 2 only
-    from StringIO import StringIO
-    f = StringIO(file_io.read_file_to_string(job_dir + 'x_mood_dataset.npy'))
+    # from StringIO import StringIO
+    # f = StringIO(file_io.read_file_to_string(job_dir + 'x_mood_dataset.npy'))
     # print('x(mels) file handler: ', f)
-    X = np.load(f)
-    f1 = StringIO(file_io.read_file_to_string(job_dir + 'y_mood_dataset.npy'))
+    # X = np.load(f)
+    # f1 = StringIO(file_io.read_file_to_string(job_dir + 'y_mood_dataset.npy'))
     # print('y(labels) file handler: ', f1)
-    y = np.load(f1)
+    # y = np.load(f1)
     print('shape of x: ', X.shape)
     print('shape of labels: ', y.shape)
 
-
-    y = to_categorical(y)
+    # y = to_categorical(y)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
     model = build_model(input_shape=X_train[0].shape)
-    train(model, job_dir, X_train, y_train, X_test, y_test)
+    # train(model, job_dir, X_train, y_train, X_test, y_test)
 
 
 if __name__ == '__main__':
