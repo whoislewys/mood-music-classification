@@ -1,17 +1,27 @@
 A deep neural net to classify music by mood
 
 ## Dependencies:
-Please install Miniconda and create a new virtual environment for this project. This will make package conflicts unlikely.
+Please install Miniconda3 to create a virtual environment for this project. This will make package conflicts unlikely.
 
 To install Miniconda please go to https://conda.io/miniconda.html
 
-When it warns you about adding Miniconda to your path, make sure you add it!
+> If it warns you about adding Miniconda to your path, make sure you add it!
 
 You can replicate the current Mood Anaconda environment by cloning this repo, then running
 
 ```
 conda env create -f environment.yml
 ```
+
+## Running the live demo
+Make sure you have follow the Dependencies instructions above.
+
+In the top level of this repo, simply do
+* `jupyter notebook`.
+* Click on the `notebooks` dir
+* Open `livedemo.ipynb`
+
+And have fun!
 
 ## SpectrogramCNN
 
